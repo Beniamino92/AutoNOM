@@ -14,23 +14,11 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 
 * Functions and utilities: 
 
- functions_stationary_model.jl
+ functions_stationary_model.jl, functions_non_stationary_model.jl
  
- functions_non_stationary_model.jl
 
 
-
-
-To use AutoNOM in illustrative_example.jl you must first add 
-add the directory that contains functions_stationary_model.jl
-and functions_stationary_model.jl to path. The example is based
-on the Illustrative Example of Section 5.1 in the manuscript. 
-
-
-* Contact Information 
-
-
-Beniamino Hadj-Amar: B.Hadj-Amar@warwick.ac.uk
+* Beniamino Hadj-Amar: B.Hadj-Amar@warwick.ac.uk
 
 https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
 
