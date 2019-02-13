@@ -7,19 +7,18 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 "Bayesian Model Search for Nonstationary Periodic Time Series".
 
 
-* Main inference script:
+* Main Inference Script:
 
  illustrative_example.jl
 
 
-* Functions and utilities: 
+* Functions and Utilities: 
 
  functions_stationary_model.jl, functions_non_stationary_model.jl
  
 
+*  Contact Information: B.Hadj-Amar@warwick.ac.uk
 
-* Beniamino Hadj-Amar: B.Hadj-Amar@warwick.ac.uk
-
-https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
+** https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
 
 
