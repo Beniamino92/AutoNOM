@@ -19,6 +19,8 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 
 *  Contact Information: B.Hadj-Amar@warwick.ac.uk
 
-** https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
+
+
+https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
 
 
