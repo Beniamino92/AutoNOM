@@ -17,10 +17,3 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
  functions_stationary_model.jl, functions_non_stationary_model.jl
  
 
-*  Contact Information: B.Hadj-Amar@warwick.ac.uk
-
-
-
-https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
-
-
