@@ -7,11 +7,6 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 "Bayesian Model Search for Nonstationary Periodic Time Series".
 
 
-========================================================================
-Summary of AutoNOM package contents:
-========================================================================
-
-
 * Main inference script:
 
  illustrative_example.jl
@@ -20,12 +15,10 @@ Summary of AutoNOM package contents:
 * Functions and utilities: 
 
  functions_stationary_model.jl
+ 
  functions_non_stationary_model.jl
 
 
-========================================================================
-Setup and Usage Examples
-========================================================================
 
 
 To use AutoNOM in illustrative_example.jl you must first add 
@@ -34,9 +27,8 @@ and functions_stationary_model.jl to path. The example is based
 on the Illustrative Example of Section 5.1 in the manuscript. 
 
 
-========================================================================
-Contact Information 
-========================================================================
+* Contact Information 
+
 
 Beniamino Hadj-Amar: B.Hadj-Amar@warwick.ac.uk
 
