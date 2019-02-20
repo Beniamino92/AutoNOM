@@ -1,5 +1,5 @@
 # AutoNOM
-Auomatic Nonstationary Oscillatory Modelling
+AutoNOM - Auomatic Nonstationary Oscillatory Modelling
 
 This software package includes Julia (v0.62) scripts to model nonstationary
 periodic time series. The methods implement reversible-jump MCMC based
