@@ -6,7 +6,7 @@ using DSP
 using RCall
 using ProgressMeter
 
-# Directory that includes the functions 
+
 cd("/Users/beniamino/Desktop/AutoNOM")
 
 path_stationary_fun = pwd()*"/functions_stationary_model.jl"
