@@ -1,11 +1,13 @@
 
+
+
 =============================================================================
 
 
      * AutoNOM (Automatic Nonstationary Oscillatory Modelling) *
 
 
-          A Julia software based on the manuscript:
+           Julia scripts which implement the methodology for
 
  "Bayesian Model Search for Nonstationary Periodic Time Series" 
                 (2019), Hadj-Amar et al.
@@ -59,10 +61,9 @@ https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
 
 Permission is granted for anyone to copy, use, or modify these
 programs and accompanying documents for purposes of research or
-education. These programs and documents are distributed without 
-any warranty, express or implied.  As the programs were written 
-for research purposes only, they have not been tested to the 
-degree that would be advisable in any important application.  
+education.  As the programs were written 
+for research purposes only, they have not been tested so
+that would be advisable in any important application.  
 All use of these programs is entirely at the user's own risk.
 	
 
