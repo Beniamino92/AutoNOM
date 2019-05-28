@@ -16,7 +16,7 @@
 
 
 
-This software package includes Julia scripts to model nonstationary
+We provide Julia scripts to model nonstationary
 periodic time series. The methods implement reversible-jump MCMC
 algorithms as described in the paper of Hadj-Amar et al. (2019). 
 
@@ -55,6 +55,14 @@ Contact Information
 Beniamino Hadj-Amar: B.Hadj-Amar@warwick.ac.uk
 
 https://warwick.ac.uk/fac/sci/statistics/staff/research_students/hadjamar/
+
+========================================================================
+Data
+========================================================================
+We also provide four dataset: (1 skin temperature and 3 breathing traces of a rat)
+
+
+
 
 
 
