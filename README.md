@@ -11,9 +11,6 @@ the \beta's directly from their Gaussian posterior conditional
 distribution.
 
 
-                -- version 0.5 --
-
-
 * Main Inference Script:
 
  illustrative_example.jl
