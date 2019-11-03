@@ -48,6 +48,50 @@ function log_posterior_ω_stationary(ω, β, a, b)
   return f
 end
 
+# Function: negative log_posterior_β + auxiliary for optim
+function neg_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+  X = get_X(ω, a, b)
+  f = (-sum((y - X*β).^2)/(2*(σ^2)) - ((β'*β)/(2*(σ_β^2))))[1]
+  return -f
+end
+function neg_f_posterior_β_stationary(β)
+  neg_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+end
+
+# Function: negative gradient log_posterior_β + auxiliary for optim
+function neg_grad_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+
+  p = length(β)
+  g = zeros(p)
+  X = get_X(ω, a, b)
+
+  for i in 1:p
+    g[i] = sum((y - X*β).*X[:, i])/(σ^2) - (β[i]/(σ_β^2))
+  end
+
+  return -g
+end
+function neg_g_posterior_β_stationary!(storage, β)
+  storage[:] = neg_grad_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+end
+
+# Function: negative Hessian log_posterior_β + auxiliary for optim
+function neg_hess_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+
+  p = length(β)
+  h = zeros(p, p)
+  X = get_X(ω, a, b)
+
+  for i in 1:p
+    h[i, i] = -sum(X[:, i].^2)/(σ^2) - (1/(σ_β^2))
+  end
+
+  return -h
+end
+function neg_h_posterior_β_stationary!(storage, β)
+  storage[:, :] =  neg_hess_log_posterior_β_stationary(β, ω, σ, σ_β, a, b)
+end
+
 # Function: sample uniformly from continuous disjoint subintervals
 function sample_uniform_continuous_intervals(n_sample::Int64, intervals)
 
@@ -185,21 +229,51 @@ function within_move_stationary(m_current, β_current, ω_current,
 
 
 
+  # ----------------- Sampling basis function coefficients -------------------
 
-  # ---------- Sampling β
+  β_prior_mean = zeros(2*m_current+2)
+  β_prior_var = (σ_β^2)*eye(2*m_current+2)
 
-  X_post = get_X(ω_out, a, b)
+  # --- Updating β
 
-  β_var_post = inv(eye(2*m_current+2)/(σ_β^2) + (X_post'*X_post)/(σ^2))
-  β_var_post = (β_var_post' + β_var_post)/2
-  β_mean_post = β_var_post*((X_post'*y)/(σ^2))
+  global ω = ω_out
+  β_mean = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
+          β_current, NelderMead()).minimizer
+  β_var = inv(neg_hess_log_posterior_β_stationary(β_mean, ω, σ, σ_β, a, b))
 
-  β_out = rand(MultivariateNormal(β_mean_post, β_var_post), 1)
+  β_proposed = rand(MvNormal(β_mean, 0.5*(β_var+β_var')), 1)
+
+
+  # Log likelik ratio
+  log_likelik_β_prop = log_likelik(β_proposed, ω_out, a, b)
+  log_likelik_β_curr = log_likelik(β_current, ω_out, a, b)
+  log_likelik_β_ratio = log_likelik_β_prop - log_likelik_β_curr
+
+  # Log prior ratio
+  log_prior_β_prop = -0.5*(β_proposed - β_prior_mean)'*inv(β_prior_var)*(β_proposed - β_prior_mean)
+  log_prior_β_curr = -0.5*(β_current - β_prior_mean)'*inv(β_prior_var)*(β_current - β_prior_mean)
+  log_prior_β_ratio = (log_prior_β_prop - log_prior_β_curr)[1]
+
+  # Log proposal ratio
+  log_proposal_β_prop = -0.5*(β_proposed - β_mean)'*inv(β_var)*(β_proposed - β_mean)
+  log_proposal_β_curr = -0.5*(β_current - β_mean)'*inv(β_var)*(β_current - β_mean)
+  log_proposal_β_ratio = (log_prior_β_curr - log_prior_β_prop)[1]
+
+  # MH ratio β
+  MH_ratio_β = log_likelik_β_ratio + log_prior_β_ratio + log_proposal_β_ratio
+
+  epsilon_β = min(1, exp(MH_ratio_β))
+  U = rand()
+  if (U <= epsilon_β)
+    β_out = β_proposed
+  else
+    β_out = β_current
+  end
 
 
   # ------- Sampling σ
 
-  #X_post = get_X(ω_out, a, b)
+  X_post = get_X(ω_out, a, b)
   res_var = sum((y - X_post*β_out).^2)
 
   ν_post = (n + ν0)/2
@@ -236,19 +310,19 @@ function birth_move_stationary(m_current, β_current, ω_current,
   ω_star = sample_uniform_continuous_intervals(1, support_ω)[1]
   ω_proposed = sort(vcat(ω_current, ω_star))
 
+  # - Proposing β ∼ Normal(β_max, Σ_max)
+  global ω = ω_proposed
 
-  # - Proposing β ∼ Normal(β̂_prop, Σ̂_prop)
-
-  X_prop = get_X(ω_proposed, a, b)
-  β_var_prop = inv(eye(2*m_proposed+2)/(σ_β^2) + (X_prop'*X_prop)/(σ^2))
-  β_mean_prop = β_var_prop*((X_prop'*y)/(σ^2))
+  β_mean_prop = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
+          zeros(2*m_proposed+2), BFGS()).minimizer
+  β_var_prop = inv(neg_hess_log_posterior_β_stationary(β_mean_prop, ω, σ, σ_β, a, b))
   β_proposed = rand(MvNormal(β_mean_prop, 0.5*(β_var_prop + β_var_prop')), 1)
 
-
-  # - Obtaining β̂_curr, Σ̂_curr (for proposal ratio)
-  X_curr = get_X(ω_current, a, b)
-  β_var_curr = inv(eye(2*m_current+2)/(σ_β^2) + (X_curr'*X_curr )/(σ^2))
-  β_mean_curr = β_var_curr*((X_curr'*y)/(σ^2))
+  # - Obtaining β_max_current, Σ_max_current (for proposal ratio)
+  global ω = ω_current
+  β_mean_curr = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
+          zeros(2*m_current+2), BFGS()).minimizer
+  β_var_curr = inv(neg_hess_log_posterior_β_stationary(β_mean_curr , ω, σ, σ_β, a, b))
 
 
   # --- Proposing σ
@@ -359,33 +433,19 @@ function death_move_stationary(m_current, β_current, ω_current,
   ω_proposed = vcat(ω_current[1:(index-1)], ω_current[(index+1):end])
 
 
-  # # - Proposing β ∼ Normal(β_max, Σ_max)
-  # global ω = ω_proposed
-  #
-  # β_mean_prop = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
-  #         zeros(2*m_proposed+2), BFGS()).minimizer
-  # β_var_prop = inv(neg_hess_log_posterior_β_stationary(β_mean_prop, ω, σ, σ_β, a, b))
-  # β_proposed = rand(MvNormal(β_mean_prop, 0.5*(β_var_prop + β_var_prop')), 1)
-  #
-  # global ω = ω_current
-  # β_mean_curr = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
-  #         zeros(2*m_current+2), BFGS()).minimizer
-  # β_var_curr = inv(neg_hess_log_posterior_β_stationary(β_mean_curr, ω, σ, σ_β, a, b))
+  # - Proposing β ∼ Normal(β_max, Σ_max)
+  global ω = ω_proposed
 
-
-
-  # - Proposing β ∼ Normal(β̂_prop, Σ̂_prop)
-
-  X_prop = get_X(ω_proposed, a, b)
-  β_var_prop = inv(eye(2*m_proposed+2)/(σ_β^2) + (X_prop'*X_prop)/(σ^2))
-  β_mean_prop = β_var_prop*((X_prop'*y)/(σ^2))
+  β_mean_prop = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
+          zeros(2*m_proposed+2), BFGS()).minimizer
+  β_var_prop = inv(neg_hess_log_posterior_β_stationary(β_mean_prop, ω, σ, σ_β, a, b))
   β_proposed = rand(MvNormal(β_mean_prop, 0.5*(β_var_prop + β_var_prop')), 1)
 
+  global ω = ω_current
+  β_mean_curr = optimize(neg_f_posterior_β_stationary, neg_g_posterior_β_stationary!, neg_h_posterior_β_stationary!,
+          zeros(2*m_current+2), BFGS()).minimizer
+  β_var_curr = inv(neg_hess_log_posterior_β_stationary(β_mean_curr, ω, σ, σ_β, a, b))
 
-  # - Obtaining β̂_curr, Σ̂_curr (for proposal ratio)
-  X_curr = get_X(ω_current, a, b)
-  β_var_curr = inv(eye(2*m_current+2)/(σ_β^2) + (X_curr'*X_curr )/(σ^2))
-  β_mean_curr = β_var_curr*((X_curr'*y)/(σ^2))
 
   length_support_ω = ϕ_ω - (2*(m_current)*ψ_ω)
 

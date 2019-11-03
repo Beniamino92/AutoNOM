@@ -1,124 +1,3 @@
-"""
-# --- Function: generate a nonstationary periodic time series,
-                see Equation (1), Hadj-Amar et al. (2019).
-
-     - n_obs = number of observations
-     - s = change-points locations
-     - ω = frequencies, for each segment
-     - β = linear basis function coefficients, for each segment
-     - α = intercept, for each segment
-     - μ = linear trend, for each segment
-     - σ = residual error, for each segment
-
-"""
-
-function get_data(n, s, ω, β, α, μ, σ)
-
-    if !(length(s) + 1 == length(ω)) error("DimensionMismatch") end
-
-    s_aux = vcat(1, s, n_obs)
-    n_CP = length(s)
-
-    signal = []
-    noise = []
-
-    for j in 1:(n_CP+1)
-
-        a = s_aux[j]
-        j == n_CP + 1 ? b = n_obs : b = s_aux[j+1] - 1
-
-        X = get_X(ω[j], a, b)
-
-        f = X * vcat(α[j], μ[j], β[j])
-        ε = rand(Normal(0, σ[j]), length(f))
-
-        append!(signal, f)
-        append!(noise, ε)
-    end
-
-    return Dict("data" => signal + noise,
-                "signal" => signal)
-end
-
-
-
-"""
-# --- Function: get objects MCMC and starting values,
-#
-
-     - s = starting value location change-points
-
-     - periodogram: if true: starting values for
-                        n of frequencies and ω are selected testing the peaks
-                        of the periodgram
-                    else: starting values for
-                       n of frequencies = 1, and ω ∼ Uniform(0, 0.5)
-"""
-
-function get_MCMC_objects(s; periodogram = false)
-
-  # --- MCMC Objects
-
-  β_sample = zeros(Float64, n_CP_max+1, 2*n_freq_max+2, n_iter_MCMC + 1)
-  ω_sample = zeros(Float64, n_CP_max+1, n_freq_max, n_iter_MCMC + 1)
-  s_sample = zeros(Float64, n_CP_max, n_iter_MCMC + 1)
-  σ_sample = zeros(Float64, n_CP_max + 1, n_iter_MCMC + 1)
-  n_freq_sample = zeros(Int64, n_CP_max+1, n_iter_MCMC+1)
-  log_likelik_sample = zeros(Float64, n_CP_max + 1, n_iter_MCMC + 1)
-  n_CP_sample = zeros(Int64, n_iter_MCMC + 1)
-
-  # ------- Initial values -------- ##
-
-  n_CP = length(s)
-
-  # n_CP, n_freq, s
-  n_CP_sample[1] = n_CP
-  s_sample[1:n_CP_sample[1]] = s
-
-  s_aux = Array{Int64}(vcat(1, s, n_obs))
-
-  # β, ω, σ
-  for j in 1:(n_CP_sample[1]+1)
-
-    global a = s_aux[j]
-    global b = s_aux[j+1]
-
-    # If periodogram == false, sample on frequency at random,
-    #                          otherwise get 'significant' frequencies.
-    if (periodogram == false)
-      n_freq_sample[j, 1] = 1
-      ω_sample[j, 1:n_freq_sample[j, 1], 1] = rand(Uniform(0, 0.5), n_freq_sample[j, 1])
-    else
-      significant_ω = find_significant_ω(y[a:b], n_freq_max)
-      n_freq_sample[j, 1] = length(significant_ω)
-      ω_sample[j, 1:n_freq_sample[j, 1], 1] = significant_ω
-    end
-
-    σ_sample[j, 1] = 1
-
-    y_aux = y[a:b]
-    ω_aux = ω_sample[j, 1:n_freq_sample[j, 1], 1]
-    X_aux = get_X(ω_aux, a, b)
-    β_var_aux = inv(eye(2*n_freq_sample[j, 1]+2)/(σ_β^2) + (X_aux'*X_aux)/(σ_sample[j, 1]^2))
-    β_var_aux = 0.5*(β_var_aux + β_var_aux')
-    β_mean_aux = β_var_aux*((X_aux'*y_aux)/(σ_sample[j, 1]^2))
-    β_sample[j, 1:(2*n_freq_sample[j, 1]+2), 1] = rand(MultivariateNormal(β_mean_aux, β_var_aux), 1)
-
-    log_likelik_sample[j, 1] = log_likelihood_segment(β_sample[j, 1:(2*n_freq_sample[j, 1]+2), 1],
-                                                    ω_sample[j, 1:n_freq_sample[j, 1], 1],
-                                                    a, b, σ_sample[j, 1])
-
-  end
-
-
-  output = Dict("β" => β_sample, "ω" => ω_sample, "σ" => σ_sample,
-                "s" => s_sample, "n_freq" => n_freq_sample,
-                "log_likelik" => log_likelik_sample,
-                "n_CP" => n_CP_sample)
-end
-
-
-
 # Function: log_posterior_β
 function log_posterior_β(β, ω, a, b, σ, σ_β)
 
@@ -129,6 +8,52 @@ function log_posterior_β(β, ω, a, b, σ, σ_β)
   return f
 end
 
+# Function: negative log_posterior_β + auxiliary for optim
+function neg_log_posterior_β(β, ω, a, b, σ, σ_β)
+  X = get_X(ω, a, b)
+  y_sub = y[a:b]
+  f = ((-sum((y_sub - X*β).^2)/(2*(σ^2))) - ((β'*β)/(2*(σ_β^2))))[1]
+
+  return -f
+end
+function neg_f_log_posterior_β(β)
+  neg_log_posterior_β(β, ω, a, b, σ, σ_β)
+end
+
+# Function: negative gradient log_posterior_β + auxiliary for optim
+function neg_grad_log_posterior_β(β, ω, a, b, σ, σ_β)
+
+  p = length(β)
+  g = zeros(p)
+  X = get_X(ω, a, b)
+  y_sub = y[a:b]
+
+  for i in 1:p
+    g[i] = sum((y_sub - X*β).*X[:, i])/(σ^2) - (β[i]/(σ_β^2))
+  end
+
+  return -g
+end
+function neg_g_log_posterior_β!(storage, β)
+  storage[:] = neg_grad_log_posterior_β(β, ω, a, b, σ, σ_β)
+end
+
+# Function: negative Hessian log_posterior_β + auxiliary for optim
+function neg_hess_log_posterior_β(β, ω, a, b, σ, σ_β)
+
+  p = length(β)
+  h = zeros(p, p)
+  X = get_X(ω, a, b)
+
+  for i in 1:p
+    h[i, i] = -sum(X[:, i].^2)/(σ^2) - (1/(σ_β^2))
+  end
+
+  return -h
+end
+function neg_h_log_posterior_β!(storage, β)
+  storage[:, :] =  neg_hess_log_posterior_β(β, ω, a, b, σ, σ_β)
+end
 
 # Function: log_likelihood within segement
 function log_likelihood_segment(β, ω, a, b, σ)
@@ -188,7 +113,7 @@ end
 function get_estimated_signal(y, s, β, ω, n_freq)
 
   n = length(y)
-  s_floor = floor.(Int64, s)
+  s_floor = floor(Int64, s)
   s_aux = vcat(1, s_floor, n)
 
   y_fit = []
@@ -300,16 +225,16 @@ end
 
 
 # Functon: non-stationary model, within step.
-function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
+function within_move_non_stationary(t, n_CP_sample, β_sample, β_mean_sample, ω_sample,
                           σ_sample, s_sample, n_freq_sample, log_likelik_sample)
-
 
   global y = data
   global n = length(data)
 
+
   n_CP_current = n_CP_sample[t-1]
   β_seg = β_sample[:, :, t-1]
-  # β_mean_seg = β_mean_sample[:, :, t-1]
+  β_mean_seg = β_mean_sample[:, :, t-1]
   ω_seg = ω_sample[:, :, t-1]
   σ_seg = σ_sample[1:(n_CP_current + 1), t-1]
   s = s_sample[1:n_CP_current, t-1]
@@ -318,54 +243,30 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
   s_current = vcat(1, s, n)
 
-  U = rand()
+  # ------ Proposing s from mixture of q_1 and q_2
 
+  U = rand()
+  # q_1 w.p δ_s_mixing
   if ( U <= δ_s_mixing)
 
-    aux = -1
-    while (aux < 0 )
-        global index_s = sample(1:n_CP_current)
-        aux = (s_current[index_s+2] - ψ_NS - (s_current[index_s] + ψ_NS))
-    end
+      aux = -1
+      while (aux < 0 )
+          global index_s = sample(1:n_CP_current)
+          aux = (s_current[index_s+2] - ψ_NS - (s_current[index_s] + ψ_NS))
+      end
 
-    s_select = s_current[index_s+1]
+      s_select = s_current[index_s+1]
+      n1 = floor(Int64, s_current[index_s+1]) - floor(Int64, s_current[index_s])
+      n2 = floor(Int64, s_current[index_s+2]) - floor(Int64, s_current[index_s+1])
+      s_star = rand(Uniform(s_current[index_s] + ψ_NS, s_current[index_s+2] - ψ_NS))
 
-    n1 = floor(Int64, s_current[index_s+1]) - floor(Int64, s_current[index_s])
-    n2 = floor(Int64, s_current[index_s+2]) - floor(Int64, s_current[index_s+1])
-
-    a_1 = floor(Int64, s_current[index_s])
-    b_1 = floor(Int64, s_current[index_s+1]-1)
-    a_2 = floor(Int64, s_current[index_s+1])
-    if (s_current[index_s+2] == n)
-      b_2 = floor(Int64, s_current[index_s+2])
-    else
-      b_2 = floor(Int64, s_current[index_s+2]) - 1
-    end
-
-    y_curr_1 = y[a_1:b_1]
-    y_curr_2 = y[a_2:b_2]
-
-    s_star = rand(Uniform(s_current[index_s] + ψ_NS, s_current[index_s+2] - ψ_NS))
-
+  # q_2 w.p (1 - δ_s_mixing)
   else
 
-    global index_s = sample(1:n_CP_current)
-    s_select = s_current[index_s+1]
-
-    n1 = floor(Int64, s_current[index_s+1]) - floor(Int64, s_current[index_s])
-    n2 = floor(Int64, s_current[index_s+2]) - floor(Int64, s_current[index_s+1])
-
-    a_1 = floor(Int64, s_current[index_s])
-    b_1 = floor(Int64, s_current[index_s+1]-1)
-    a_2 = floor(Int64, s_current[index_s+1])
-    if (s_current[index_s+2] == n)
-      b_2 = floor(Int64, s_current[index_s+2])
-    else
-      b_2 = floor(Int64, s_current[index_s+2]) - 1
-    end
-
-    y_curr_1 = y[a_1:b_1]
-    y_curr_2 = y[a_2:b_2]
+      global index_s = sample(1:n_CP_current)
+      s_select = s_current[index_s+1]
+      n1 = floor(Int64, s_current[index_s+1]) - floor(Int64, s_current[index_s])
+      n2 = floor(Int64, s_current[index_s+2]) - floor(Int64, s_current[index_s+1])
 
     if ((n1 > ψ_NS) && (n2 > ψ_NS))
       s_star = rand(Normal(s_select, σ_RW_s), 1)[1]
@@ -376,11 +277,12 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     else
       s_star = s_select
     end
-  end
 
+  end
 
   s_proposed = float(copy(s_current))
   s_proposed[index_s+1] = s_star
+
 
   ω_current_1 = ω_seg[index_s, 1:n_freq_seg[index_s]]
   ω_current_2 = ω_seg[index_s+1, 1:n_freq_seg[index_s+1]]
@@ -390,11 +292,9 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   σ_current_1 = σ_seg[index_s]
   σ_current_2 = σ_seg[index_s+1]
 
-  n_freq_curr_1 = length(ω_current_1)
-  n_freq_curr_2 = length(ω_current_2)
-
   log_likelik_1_current = log_likelik_seg[index_s]
   log_likelik_2_current = log_likelik_seg[index_s + 1]
+
 
   # Proposed omega are the same as the previous partitions
   ω_star_1 = copy(ω_current_1)
@@ -402,56 +302,44 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   ω_star_2 = copy(ω_current_2)
   n_freq_prop_2 = length(ω_star_2)
 
-  # -- Proposing β, partition 1.
+  # res_var_proposed_1 = sum((y_star_1 - X_aux*β_proposed_1).^2)
 
-  a = floor(Int64, s_proposed[index_s])
-  b = floor(Int64, s_proposed[index_s + 1]) - 1
+  # --- Proposing beta for new partition 1
+  global a = floor(Int64, s_proposed[index_s])
+  global b = floor(Int64, s_proposed[index_s + 1]) - 1
+  global ω = ω_star_1
+  global σ = σ_current_1
+  β_mean_1 = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!,  neg_h_log_posterior_β!,
+                    β_current_1, BFGS()).minimizer
+  β_var_1 = inv(neg_hess_log_posterior_β(β_mean_1, ω, a, b, σ, σ_β))
+  β_proposed_1 = rand(MvNormal(β_mean_1, β_var_1), 1)
+
+  # Necessary for storing the Β means.
   y_star_1 = y[a:b]
+  log_likelik_1_proposed = log_likelihood_segment(β_proposed_1, ω_star_1, a, b, σ)
 
-  X_prop_1 = get_X(ω_star_1, a, b)
-  β_var_prop_1 = inv(eye(2*n_freq_prop_1 + 2)/(σ_β^2) + (X_prop_1'*X_prop_1)/(σ_current_1^2))
-  β_var_prop_1 = 0.5*(β_var_prop_1 + β_var_prop_1')
-  β_mean_prop_1 = β_var_prop_1*((X_prop_1'*y_star_1)/(σ_current_1^2))
-  β_proposed_1 = rand(MvNormal(β_mean_prop_1, β_var_prop_1), 1)
-
-  log_likelik_1_proposed = log_likelihood_segment(β_proposed_1, ω_star_1,
-                                                  a, b, σ_current_1)
-
-
-  # -- Proposing β, partition 2
-
-  a = floor(Int64, s_proposed[index_s + 1])
+  # --- Proposing beta for new partition 2
+  global a = floor(Int64, s_proposed[index_s + 1])
   if (s_proposed[index_s + 2] == n)
-    b = floor(Int64, s_proposed[index_s + 2])
+    global b = floor(Int64, s_proposed[index_s + 2])
   else
-    b = floor(Int64, s_proposed[index_s + 2]) - 1
+    global b = floor(Int64, s_proposed[index_s + 2]) - 1
   end
+  global ω = ω_star_2
+  global σ = σ_current_2
+
+  β_mean_2 = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!,  neg_h_log_posterior_β!,
+                    β_current_2, BFGS()).minimizer
+  β_var_2 = inv(neg_hess_log_posterior_β(β_mean_2, ω, a, b, σ, σ_β))
+  β_proposed_2 = rand(MvNormal(β_mean_2, β_var_2), 1)
+
   y_star_2 = y[a:b]
+  log_likelik_2_proposed = log_likelihood_segment(β_proposed_2, ω_star_2, a, b, σ)
+
+  # res_var_proposed_2 = sum((y_star_2 - X_aux*β_proposed_2).^2)
 
 
-  X_prop_2 = get_X(ω_star_2, a, b)
-  β_var_prop_2 = inv(eye(2*n_freq_prop_2 + 2)/(σ_β^2) + (X_prop_2'*X_prop_2)/(σ_current_2^2))
-  β_var_prop_2 = 0.5*(β_var_prop_2 + β_var_prop_2')
-  β_mean_prop_2 = β_var_prop_2*((X_prop_2'*y_star_2)/(σ_current_2^2))
-  β_proposed_2 = rand(MvNormal(β_mean_prop_2, β_var_prop_2), 1)
-
-  log_likelik_2_proposed = log_likelihood_segment(β_proposed_2, ω_star_2, a, b, σ_current_2)
-
-
-
-
-
-  # ---- Auxiliary for proposal ratio β
-
-  X_curr_1 = get_X(ω_current_1, a_1, b_1)
-  β_var_curr_1 = inv(eye(2*n_freq_curr_1 + 2)/(σ_β^2) + (X_curr_1'*X_curr_1)/(σ_current_1^2))
-  β_var_curr_1 = 0.5*(β_var_curr_1 + β_var_curr_1')
-  β_mean_curr_1 = β_var_curr_1*((X_curr_1'*y_curr_1)/(σ_current_1^2))
-
-  X_curr_2 = get_X(ω_current_2, a_2, b_2)
-  β_var_curr_2 = inv(eye(2*n_freq_curr_2 + 2)/(σ_β^2) + (X_curr_2'*X_curr_2)/(σ_current_2^2))
-  β_var_curr_2 = 0.5*(β_var_curr_2 + β_var_curr_2')
-  β_mean_curr_2 = β_var_curr_2*((X_curr_2'*y_curr_2)/(σ_current_2^2))
+  # Necessary for storing the Β means.
 
 
 
@@ -473,30 +361,11 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   log_prior_ratio = copy(log_prior_s_ratio)
 
 
-
-
   # ----------- Proposal_ratio
 
+  log_proposal_ratio = log(1)
 
-  log_proposal_β_1_curr = (log.(pdf(MvNormal(β_mean_curr_1, β_var_curr_1),
-                            β_current_1))[1])
-  log_proposal_β_2_curr = (log.(pdf(MvNormal(β_mean_curr_2, β_var_curr_2),
-                            β_current_2))[1])
-  log_proposal_β_curr = log_proposal_β_1_curr + log_proposal_β_2_curr
-
-
-  log_proposal_β_1_prop = (log.(pdf(MvNormal(β_mean_prop_1, β_var_prop_1),
-                            β_proposed_1))[1])
-  log_proposal_β_2_prop = (log.(pdf(MvNormal(β_mean_prop_2, β_var_prop_2),
-                            β_proposed_2))[1])
-  log_proposal_β_prop = log_proposal_β_1_prop + log_proposal_β_2_prop
-
-
-  log_proposal_ratio = log_proposal_β_curr - log_proposal_β_prop
-
-
-
-  # ---------- Output proposed objects (except σ)
+  # ---------- Output proposed objects (expect σ)
 
   if (index_s == 1)
 
@@ -507,6 +376,14 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_aux = [β_aux_2; β_aux_3; β_aux_1]
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
+
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[(index_s+2):(n_CP_current + 1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_2; β_mean_aux_3; β_mean_aux_1;]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max + 2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[(index_s+2):(n_CP_current + 1), :]
@@ -540,6 +417,13 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
 
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2; β_mean_aux_3]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -573,7 +457,14 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
 
-
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux_4 = β_seg[(index_s+2:(n_CP_current+1)), :]
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2; β_mean_aux_3; β_mean_aux_4]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -606,14 +497,13 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   epsilon = min(1, exp(MH_ratio))
   U = rand()
 
-
   # ---- # Accept / Reject
 
   if (U <= epsilon)
     n_CP_sample[t] = n_CP_current
     s_sample[1:n_CP_sample[t], t] = s_proposed[2:(end-1)]
     β_sample[:, :, t] = β_proposed
-    # β_mean_sample[:, :, t] = β_mean_proposed
+    β_mean_sample[:, :, t] = β_mean_proposed
     ω_sample[:, :, t] = ω_proposed
     n_freq_sample[:, t] = n_freq_proposed
     log_likelik_sample[:, t] = log_likelik_seg_proposed
@@ -621,12 +511,11 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     n_CP_sample[t] = n_CP_current
     s_sample[1:n_CP_sample[t], t] = s_current[2:(end-1)]
     β_sample[:, :, t] = β_seg
-    # β_mean_sample[:, :, t] = β_mean_seg
+    β_mean_sample[:, :, t] = β_mean_seg
     ω_sample[:, :, t] = ω_seg
     n_freq_sample[1:(n_CP_sample[t] + 1), t] = n_freq_seg
     log_likelik_sample[1:(n_CP_sample[t] + 1), t] = log_likelik_seg
   end
-
 
 
   # ---- Updating σ
@@ -643,18 +532,18 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   β2_aux_current = β_seg_aux_current[index_s+1, 1:(2*n_freq_seg_aux_current[index_s+1]+2)]
 
 
-  a = floor(Int64, s_aux_current[index_s])
-  b = floor(Int64, s_aux_current[index_s + 1]) - 1
+  global a = floor(Int64, s_aux_current[index_s])
+  global b = floor(Int64, s_aux_current[index_s + 1]) - 1
   y_aux_current_1 = y[a:b]
   X_aux = get_X(ω1_aux_current, a, b)
   res_var_1 = sum((y_aux_current_1 - X_aux*β1_aux_current).^2)
 
-
-  a = floor(Int64, s_aux_current[index_s + 1])
+  # --- Proposing beta for new partition 2
+  global a = floor(Int64, s_aux_current[index_s + 1])
   if (s_aux_current[index_s + 2] == n)
-    b = floor(Int64, s_aux_current[index_s + 2])
+    global b = floor(Int64, s_aux_current[index_s + 2])
   else
-    b = floor(Int64, s_aux_current[index_s + 2]) - 1
+    global b = floor(Int64, s_aux_current[index_s + 2]) - 1
   end
 
   y_aux_current_2 = y[a:b]
@@ -703,13 +592,12 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
   # Updating parameters (Segment model) for each regime
   s_aux = vcat(1, s_sample[1:n_CP_current, t], n_obs)
-
   for j in 1:(n_CP_current + 1)
-    a = floor(Int64, s_aux[j])
+    global a = floor(Int64, s_aux[j])
     if (j == n_CP_current + 1)
-      b = floor(Int64, n_obs)
+      global b = floor(Int64, n_obs)
     else
-      b = floor(Int64, (s_aux[j+1] - 1))
+      global b = floor(Int64, (s_aux[j+1] - 1))
     end
     global y = data[a:b]
     global n = length(y)
@@ -727,17 +615,24 @@ function within_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     σ_sample[j, t] = MCMC_S["σ"]
     log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+
+    global ω = MCMC_S["ω"]
+    global y = data
+    global σ = MCMC_S["σ"]
+
+    β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                             zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+    β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2) - length(β_mean_aux)))
   end
 
-
-  output = Dict("n_CP" => n_CP_sample, "β" => β_sample,  "σ" => σ_sample,
+  output = Dict("n_CP" => n_CP_sample, "β" => β_sample, "β_mean" => β_mean_sample, "σ" => σ_sample,
                 "ω" => ω_sample, "s" => s_sample, "n_freq" => n_freq_sample, "log_likelik" => log_likelik_sample)
 
   return output
 end
 
 # Function: non-stationary model, birth step.
-function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
+function birth_move_non_stationary(t, n_CP_sample, β_sample, β_mean_sample, ω_sample,
                         σ_sample, s_sample, n_freq_sample, log_likelik_sample)
 
   global y = data
@@ -745,6 +640,7 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
   n_CP_current = n_CP_sample[t-1]
   β_seg = β_sample[:, :, t-1]
+  β_mean_seg = β_mean_sample[:, :, t-1]
   ω_seg = ω_sample[:, :, t-1]
   σ_seg = σ_sample[1:n_CP_current+1, t-1]
   s = s_sample[1:n_CP_current, t-1]
@@ -775,6 +671,7 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   β_current = β_seg[index_s, 1:(2*n_freq_seg[index_s]+2)]
   σ_current = σ_seg[index_s]
   log_likelik_current = log_likelik_seg[index_s]
+  β_mean_current = β_mean_seg[index_s, 1:(2*n_freq_seg[index_s]+2)]
 
   ######### ------ Proposing σ's ---- ######'
 
@@ -783,32 +680,38 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   σ_proposed_2 = sqrt((σ_current^2) * ((1-u)/u))
 
 
+  ########## ------- Proposing Beta's ------- ##########
 
   # --- Proposing beta for new partition 1
 
-  a = floor(Int64, s_proposed[index_s])
-  b = floor(Int64, s_proposed[index_s + 1]) - 1
+  global a = floor(Int64, s_proposed[index_s])
+  global b = floor(Int64, s_proposed[index_s + 1]) - 1
+
   y_star_1 = y[a:b]
   n_obs_prop_1  = length(y_star_1)
   ω_star_1 = copy(ω_current)
   n_freq_prop_1 = length(ω_star_1)
+  X_aux = get_X(ω_star_1, a, b)
+  β_start_opt = inv(X_aux'*X_aux)*X_aux'*y_star_1
 
-  X_prop_1 = get_X(ω_star_1, a, b)
-  β_var_prop_1 = inv(eye(2*n_freq_prop_1 + 2)/(σ_β^2) + (X_prop_1'*X_prop_1)/(σ_proposed_1^2))
-  β_var_prop_1 = 0.5*(β_var_prop_1 + β_var_prop_1')
-  β_mean_prop_1 = β_var_prop_1*((X_prop_1'*y_star_1)/(σ_proposed_1^2))
-  β_proposed_1 = rand(MvNormal(β_mean_prop_1, β_var_prop_1), 1)
-  res_var_prop_1 = sum((y_star_1 - X_prop_1*β_proposed_1).^2)
+  global ω = ω_star_1
+  global σ = σ_proposed_1
+  β_mean_1 = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!,  neg_h_log_posterior_β!,
+                    β_start_opt, BFGS()).minimizer
+  β_var_1 = inv(neg_hess_log_posterior_β(β_mean_1, ω, a, b, σ, σ_β))
+  β_proposed_1 = rand(MvNormal(β_mean_1, β_var_1), 1)
+  res_var_prop_1 = sum((y_star_1 - X_aux*β_proposed_1).^2)
+
 
   log_likelik_1_proposed = log_likelihood_segment(β_proposed_1, ω_star_1, a, b, σ_proposed_1)
 
 
   # --- Proposing beta for new partition 2
-  a = floor(Int64, s_proposed[index_s + 1])
+  global a = floor(Int64, s_proposed[index_s + 1])
   if (s_proposed[index_s + 2] == n)
-    b = floor(Int64, s_proposed[index_s + 2])
+    global b = floor(Int64, s_proposed[index_s + 2])
   else
-    b = floor(Int64, s_proposed[index_s + 2]) - 1
+    global b = floor(Int64, s_proposed[index_s + 2]) - 1
   end
 
   y_star_2 = y[a:b]
@@ -816,35 +719,23 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   ω_star_2 = copy(ω_current)
   n_freq_prop_2 = length(ω_star_2)
 
-  X_prop_2 = get_X(ω_star_2, a, b)
-  β_var_prop_2 = inv(eye(2*n_freq_prop_2 + 2)/(σ_β^2) + (X_prop_2'*X_prop_2)/(σ_proposed_2^2))
-  β_var_prop_2 = 0.5*(β_var_prop_2 + β_var_prop_2')
-  β_mean_prop_2 = β_var_prop_2*((X_prop_2'*y_star_2)/(σ_proposed_2^2))
-  β_proposed_2 = rand(MvNormal(β_mean_prop_2, β_var_prop_2), 1)
-  res_var_prop_2 = sum((y_star_2 - X_prop_2*β_proposed_2).^2)
+  X_aux = get_X(ω_star_2, a, b)
+  β_start_opt = inv(X_aux'*X_aux)*X_aux'*y_star_2
 
+  global ω = ω_star_2
+  global σ = σ_proposed_2
+  β_mean_2 = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!,  neg_h_log_posterior_β!,
+                    β_start_opt, BFGS()).minimizer
+  β_var_2 = inv(neg_hess_log_posterior_β(β_mean_2, ω, a, b, σ, σ_β))
+  β_proposed_2 = rand(MvNormal(β_mean_2, β_var_2), 1)
+  res_var_prop_2 = sum((y_star_2 - X_aux*β_proposed_2).^2)
 
   log_likelik_2_proposed = log_likelihood_segment(β_proposed_2, ω_star_2, a, b, σ_proposed_2)
 
-
-
-  # ---- Auxiliary for proposal ratio β
-
-  a = floor(Int64, s_current[index_s])
-  if (s_current[index_s+1]==n)
-    b = floor(Int64, s_current[index_s+1])
-  else
-    b = floor(Int64, s_current[index_s+1]) - 1
-  end
-  y_curr = y[a:b]
-
-  X_curr = get_X(ω_current, a, b)
-  β_var_curr = inv(eye(2*n_freq_current+2)/(σ_β^2) + (X_curr'*X_curr)/(σ_current^2))
-  β_var_curr = (β_var_curr + β_var_curr')/2
-  β_mean_curr = β_var_curr*((X_curr'*y_curr)/(σ_current^2))
-
-
   ########## ------- Evaluating acceptance probability  ------- ##########
+
+
+
 
   # ------------ Log_likelik_ratio
 
@@ -904,14 +795,27 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   log_proposal_ratio_s = log(length_support/(n_CP_current + 1))
   log_proposal_ratio_m_omega = log(1/2)
 
+  # -- Variance beta current matrixes
+  a = floor(Int64, s_current[index_s])
+  if (s_current[index_s+1]==n)
+    b = floor(Int64, s_current[index_s+1])
+  else
+    b = floor(Int64, s_current[index_s+1]) - 1
+  end
+  β_var_current = inv(neg_hess_log_posterior_β(β_mean_current,
+                    ω_current, a, b, σ_current, σ_β))
 
-  log_proposal_β_current = log(pdf(MvNormal(β_mean_curr, β_var_curr), β_current))
 
-  log_proposal_β_1_proposed = log.(pdf(MvNormal(β_mean_prop_1, β_var_prop_1), β_proposed_1))[1]
-  log_proposal_β_2_proposed = log.(pdf(MvNormal(β_mean_prop_2, β_var_prop_2), β_proposed_2))[1]
+  log_proposal_β_current = -log(sqrt(det(2π*β_var_current))) +
+            (-0.5*(β_current - β_mean_current)'*inv(β_var_current)*(β_current - β_mean_current))[1]
+  # log_proposal_β_current = log(pdf(MvNormal(β_mean_current, β_var_current), β_current))[1]
+
+  log_proposal_β_1_proposed = log.(pdf(MvNormal(β_mean_1, β_var_1), β_proposed_1))[1]
+  log_proposal_β_2_proposed = log.(pdf(MvNormal(β_mean_2, β_var_2), β_proposed_2))[1]
 
   log_proposal_β_ratio = log_proposal_β_current -
                         (log_proposal_β_1_proposed + log_proposal_β_2_proposed)
+
 
 
   log_proposal_ratio = log_proposal_ratio_n_CP + log_proposal_ratio_m_omega +
@@ -933,6 +837,13 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
 
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[(index_s+1):(n_CP_current+1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_2; β_mean_aux_3; β_mean_aux_1;]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[(index_s+1):(n_CP_current+1), :]
@@ -973,6 +884,13 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
 
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2; β_mean_aux_3]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -1014,6 +932,14 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
 
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_1), zeros((2*n_freq_max+2) - length(β_mean_1))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 = reshape(vcat(vec(β_mean_2), zeros((2*n_freq_max+2) - length(β_mean_2))), 1, (2*n_freq_max+2))
+    β_mean_aux_4 = β_seg[(index_s+1:(n_CP_current+1)), :]
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2; β_mean_aux_3; β_mean_aux_4]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -1063,6 +989,7 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     n_CP_sample[t] = n_CP_current + 1
     s_sample[1:n_CP_sample[t], t] = s_proposed[2:(end-1)]
     β_sample[:, :, t] = β_proposed
+    β_mean_sample[:, :, t] = β_mean_proposed
     ω_sample[:, :, t] = ω_proposed
     n_freq_sample[:, t] = n_freq_proposed
     σ_sample[:, t] = σ_proposed
@@ -1076,13 +1003,13 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       s_sample[1:n_CP_sample[t], t] = s_current[2:(end-1)]
     end
     β_sample[:, :, t] = β_seg
+    β_mean_sample[:, :, t] = β_mean_seg
     ω_sample[:, :, t] = ω_seg
     σ_sample[1:(n_CP_sample[t] + 1), t] = σ_seg
     n_freq_sample[1:(n_CP_sample[t] + 1), t] = n_freq_seg
     log_likelik_sample[1:(n_CP_sample[t] + 1), t] = log_likelik_seg
     accepted = false
   end
-
 
   if (accepted == true)
     if (index_s == 1)
@@ -1094,11 +1021,11 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
       # --- Updating untouched segments
       for j in index_seg_update
-        a = floor(Int64, s_aux[j+1])
+        global a = floor(Int64, s_aux[j+1])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_aux[j+2] - 1))
+          global b = floor(Int64, (s_aux[j+2] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1108,6 +1035,7 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         σ_current = σ_sample[j, t-1]
         β_current = β_sample[j, 1:(2*m_current+2), t-1]
         ω_current = ω_sample[j, 1:(m_current), t-1]
+
 
         MCMC_S = RJMCMC_stationary_model(m_current, β_current, ω_current, σ_current, a, b, λ_S, c_S, ϕ_ω, ψ_ω, n_freq_max)
         n_freq_sample[j+1, t] = MCMC_S["m"]
@@ -1116,17 +1044,24 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         σ_sample[j+1, t] = MCMC_S["σ"]
         log_likelik_sample[j+1, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+
+
+        global ω = MCMC_S["ω"]
+        global y = data
+        global σ = MCMC_S["σ"]
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
       end
 
       for j in index_seg_adjacent
 
-        a = floor(Int64, s_aux[j])
+        global a = floor(Int64, s_aux[j])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_aux[j+1] - 1))
+          global b = floor(Int64, (s_aux[j+1] - 1))
         end
-
         global y = data[a:b]
         global n = length(y)
         global σ_RW_ω = (1/(σ_RW_ω_hyper*n))
@@ -1143,8 +1078,15 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         σ_sample[j, t] = MCMC_S["σ"]
         log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
-      end
+        global ω = MCMC_S["ω"]
+        global y = data
+        global σ = MCMC_S["σ"]
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
 
+
+      end
     elseif (index_s == (n_CP_current + 1))
       s_aux = vcat(1, s_sample[1:n_CP_sample[t], t], n_obs)
       index_seg_update = collect(1:(index_s - 1))
@@ -1152,11 +1094,11 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
       for j in index_seg_update
 
-        a = floor(Int64, s_aux[j])
+        global a = floor(Int64, s_aux[j])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_aux[j+1] - 1))
+          global b = floor(Int64, (s_aux[j+1] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1174,14 +1116,22 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
         log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+
+        global ω = MCMC_S["ω"]
+        global y = data
+        global σ = MCMC_S["σ"]
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
+
       end
 
       for j in index_seg_adjacent
-        a = floor(Int64, s_aux[j])
+        global a = floor(Int64, s_aux[j])
         if (j == n_CP_current + 2)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_aux[j+1] - 1))
+          global b = floor(Int64, (s_aux[j+1] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1199,6 +1149,12 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
         log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+        global ω = MCMC_S["ω"]
+        global σ = MCMC_S["σ"]
+        global y = data
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
 
       end
     else
@@ -1209,11 +1165,11 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
       for j in index_seg_update
         if (j < index_s)
-          a = floor(Int64, s_aux[j])
+          global a = floor(Int64, s_aux[j])
           if (j == n_CP_current + 1)
-            b = floor(Int64, n_obs)
+            global b = floor(Int64, n_obs)
           else
-            b = floor(Int64, (s_aux[j+1] - 1))
+            global b = floor(Int64, (s_aux[j+1] - 1))
           end
           global y = data[a:b]
           global n = length(y)
@@ -1232,12 +1188,18 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
           log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
 
+          global ω = MCMC_S["ω"]
+          global y = data
+          global σ = MCMC_S["σ"]
+          β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                   zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+          β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
         else
-          a = floor(Int64, s_aux[j])
+          global a = floor(Int64, s_aux[j])
           if (j == n_CP_current + 2)
-            b = floor(Int64, n_obs)
+            global b = floor(Int64, n_obs)
           else
-            b = floor(Int64, (s_aux[j+1] - 1))
+            global b = floor(Int64, (s_aux[j+1] - 1))
           end
           global y = data[a:b]
           global n = length(y)
@@ -1248,7 +1210,6 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
           β_current = β_sample[j-1, 1:(2*m_current+2), t-1]
           ω_current = ω_sample[j-1, 1:(m_current), t-1]
 
-
           MCMC_S = RJMCMC_stationary_model(m_current, β_current, ω_current, σ_current, a, b, λ_S, c_S, ϕ_ω, ψ_ω, n_freq_max)
           n_freq_sample[j, t] = MCMC_S["m"]
           σ_sample[j, t] = MCMC_S["σ"]
@@ -1256,16 +1217,23 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
           ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
           log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+
+          global ω = MCMC_S["ω"]
+          global y = data
+          global σ = MCMC_S["σ"]
+          β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                   zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+          β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
         end
       end
 
       for j in index_seg_adjacent
 
-        a = floor(Int64, s_aux[j])
+        global a = floor(Int64, s_aux[j])
         if (j == n_CP_current + 2)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_aux[j+1] - 1))
+          global b = floor(Int64, (s_aux[j+1] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1283,16 +1251,22 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
         log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+        global ω = MCMC_S["ω"]
+        global y = data
+        global σ = MCMC_S["σ"]
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
       end
     end
   else
     s_aux = vcat(1, s_sample[1:n_CP_current, t], n_obs)
     for j in 1:(n_CP_current + 1)
-      a = floor(Int64, s_aux[j])
+      global a = floor(Int64, s_aux[j])
       if (j == n_CP_current + 1)
-        b = floor(Int64, n_obs)
+        global b = floor(Int64, n_obs)
       else
-        b = floor(Int64, (s_aux[j+1] - 1))
+        global b = floor(Int64, (s_aux[j+1] - 1))
       end
       global y = data[a:b]
       global n = length(y)
@@ -1309,21 +1283,25 @@ function birth_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       β_sample[j, :, t] = vcat(MCMC_S["β"], zeros((2*n_freq_max+2)  - length(MCMC_S["β"])))
       ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
       log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
+
+      global ω = MCMC_S["ω"]
+      global y = data
+      global σ = MCMC_S["σ"]
+      β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                               zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+      β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
+
     end
   end
 
-
-  output = Dict("n_CP" => n_CP_sample, "β" => β_sample, "σ" => σ_sample,
-                "ω" => ω_sample, "s" => s_sample, "n_freq" => n_freq_sample,
-                "log_likelik" => log_likelik_sample)
+  output = Dict("n_CP" => n_CP_sample, "β" => β_sample, "β_mean" => β_mean_sample, "σ" => σ_sample,
+                "ω" => ω_sample, "s" => s_sample, "n_freq" => n_freq_sample, "log_likelik" => log_likelik_sample)
 
   return output
 end
 
-
 # Function: non-stationary model, death step.
-
-function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
+function death_move_non_stationary(t, n_CP_sample, β_sample, β_mean_sample, ω_sample,
                           σ_sample, s_sample, n_freq_sample, log_likelik_sample)
 
   global y = data
@@ -1331,6 +1309,7 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
   n_CP_current = n_CP_sample[t-1]
   β_seg = β_sample[:, :, t-1]
+  β_mean_seg = β_mean_sample[:, :, t-1]
   ω_seg = ω_sample[:, :, t-1]
   σ_seg = σ_sample[1:n_CP_current+1, t-1]
   s = s_sample[1:n_CP_current, t-1]
@@ -1367,6 +1346,8 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   log_likelik_1_current = log_likelik_seg[index_s]
   log_likelik_2_current = log_likelik_seg[index_s + 1]
 
+  β_mean_current_1 = β_mean_seg[index_s, 1:(2*n_freq_seg[index_s]+2)]
+  β_mean_current_2 = β_mean_seg[index_s+1, 1:(2*n_freq_seg[index_s+1]+2)]
 
   wprobs = [0.5, 0.5]
   items = [ω_current_1, ω_current_2]
@@ -1379,50 +1360,26 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
 
 
   # Proposing β
-  a = floor(Int64, s_proposed[index_s])
+
+  global a = floor(Int64, s_proposed[index_s])
   if (s_proposed[index_s + 1] == n)
-    b = floor(Int64, s_proposed[index_s + 1])
+    global b = floor(Int64, s_proposed[index_s + 1])
   else
-    b = floor(Int64, s_proposed[index_s + 1]) - 1
+    global b = floor(Int64, s_proposed[index_s + 1]) - 1
   end
 
   y_star = y[a:b]
-  X_prop = get_X(ω_star, a, b)
-  β_var_prop = inv(eye(2*n_freq_star + 2)/(σ_β^2) + (X_prop'*X_prop)/(σ_star^2))
-  β_var_prop = 0.5*(β_var_prop + β_var_prop')
-  β_mean_prop = β_var_prop*((X_prop'*y_star)/(σ_star^2))
+  X_aux = get_X(ω_star, a, b)
+  # β_start_opt = inv(X_aux'*X_aux)*X_aux'*y_star
+  β_start_opt = zeros(2*(n_freq_star) + 2)
 
-  β_proposed_star = rand(MvNormal(β_mean_prop, β_var_prop), 1)
-  log_likelik_star_proposed = log_likelihood_segment(β_proposed_star,
-                                                     ω_star, a, b, σ_star)
-
-  # ----------- Auxiliary objects for proposal ratio:
-
-  a = floor(Int64, s_current[index_s])
-  b = floor(Int64, s_current[index_s+1]) - 1
-  y_curr_1 = y[a:b]
-
-
-  X_curr_1 = get_X(ω_current_1, a, b)
-  β_var_curr_1 = inv(eye(2*n_freq_current_1 + 2)/(σ_β^2) + (X_curr_1'*X_curr_1)/(σ_current_1^2))
-  β_var_curr_1 = 0.5*(β_var_curr_1 + β_var_curr_1')
-  β_mean_curr_1 = β_var_curr_1*((X_curr_1'*y_curr_1)/(σ_current_1^2))
-
-
-  a = floor(Int64, s_current[index_s+1])
-  if (s_current[index_s+2]==n)
-    b = floor(Int64, s_current[index_s+2])
-  else
-    b = floor(Int64, s_current[index_s+2]) - 1
-  end
-
-  y_curr_2 = y[a:b]
-
-  X_curr_2 = get_X(ω_current_2, a, b)
-  β_var_curr_2 = inv(eye(2*n_freq_current_2 + 2)/(σ_β^2) + (X_curr_2'*X_curr_2)/(σ_current_2^2))
-  β_var_curr_2 = 0.5*(β_var_curr_2 + β_var_curr_2')
-  β_mean_curr_2 = β_var_curr_2*((X_curr_2'*y_curr_2)/(σ_current_2^2))
-
+  global ω = ω_star
+  global σ = σ_star
+  β_mean_star = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!,  neg_h_log_posterior_β!,
+                    β_start_opt, BFGS()).minimizer
+  β_var_star = inv(neg_hess_log_posterior_β(β_mean_star, ω, a, b, σ, σ_β))
+  β_proposed_star = rand(MvNormal(β_mean_star, β_var_star), 1)
+  log_likelik_star_proposed = log_likelihood_segment(β_proposed_star, ω_star, a, b, σ)
 
 
   # ------------ Log_likelik_ratio
@@ -1487,10 +1444,33 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   log_proposal_ratio_m_omega = -log(0.5)
 
 
-  log_proposal_β_1_current = log(pdf(MvNormal(β_mean_curr_1, β_var_curr_1), β_current_1)[1])
-  log_proposal_β_2_current = log(pdf(MvNormal(β_mean_curr_2, β_var_curr_2), β_current_2)[1])
+  # Variance beta current matrixes
 
-  log_proposal_β_proposed = log(pdf(MvNormal(β_mean_prop, β_var_prop), β_proposed_star)[1])
+  a = floor(Int64, s_current[index_s])
+  b = floor(Int64, s_current[index_s+1]) - 1
+
+  β_var_current_1 =inv(neg_hess_log_posterior_β(β_mean_current_1,
+                    ω_current_1, a, b, σ_current_1, σ_β))
+
+  a = floor(Int64, s_current[index_s+1])
+  if (s_current[index_s+2]==n)
+    b = floor(Int64, s_current[index_s+2])
+  else
+    b = floor(Int64, s_current[index_s+2]) - 1
+  end
+  β_var_current_2 =inv(neg_hess_log_posterior_β(β_mean_current_2,
+                    ω_current_2, a, b, σ_current_2, σ_β))
+
+
+  log_proposal_β_1_current = (-log(sqrt(det(2π*β_var_current_1))) +
+                             (-0.5*(β_current_1 - β_mean_current_1)'*inv(β_var_current_1)*(β_current_1 - β_mean_current_1)))[1]
+  log_proposal_β_2_current = (- log(sqrt(det(2π*β_var_current_2))) +
+                               (-0.5*(β_current_2 - β_mean_current_2)'*inv(β_var_current_2)*(β_current_2 - β_mean_current_2)))[1]
+
+  log_proposal_β_proposed = (- log(sqrt(det(2π* β_var_star))) +
+                               (-0.5*(β_proposed_star - β_mean_star)'*inv(β_var_star)*(β_proposed_star - β_mean_star)))[1]
+
+
 
   log_proposal_β_ratio = (log_proposal_β_1_current + log_proposal_β_2_current) - log_proposal_β_proposed
 
@@ -1502,6 +1482,8 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
   log_jacobian = -log(2*(σ_current_1 + σ_current_2)^2)
 
 
+  # ---------- Output proposed objects
+
   if (index_s == 1)
 
     # β
@@ -1510,6 +1492,14 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_aux = [β_aux_2; β_aux_1]
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1),(2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
+
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[(index_s+2):(n_CP_current + 1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_star), zeros((2*n_freq_max+2) - length(β_mean_star))), 1, (2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_2; β_mean_aux_1]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
+
 
     # ω
     ω_aux_1 = ω_seg[(index_s+2):(n_CP_current + 1), :]
@@ -1539,6 +1529,7 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     log_likelik_aux = [log_likelik_aux_2; log_likelik_aux_1]
     log_likelik_zeros_aux = zeros(Int64, (n_CP_max - size(log_likelik_aux)[1] + 1))
     log_likelik_seg_proposed = [log_likelik_aux; log_likelik_zeros_aux ]
+
   elseif (index_s == n_CP_current)
 
     # β
@@ -1547,6 +1538,13 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_aux = [β_aux_1; β_aux_2]
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
+
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_star), zeros((2*n_freq_max+2) - length(β_mean_star))), 1,(2*n_freq_max+2))
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -1584,6 +1582,14 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     β_aux = [β_aux_1; β_aux_2; β_aux_3]
     β_zeros_aux = zeros((n_CP_max - size(β_aux)[1] + 1), (2*n_freq_max+2))
     β_proposed = [β_aux; β_zeros_aux]
+
+    # β_mean
+    β_mean_aux_1 = β_mean_seg[1:(index_s-1), :]
+    β_mean_aux_2 = reshape(vcat(vec(β_mean_star), zeros((2*n_freq_max+2) - length(β_mean_star))), 1, (2*n_freq_max+2))
+    β_mean_aux_3 =  β_mean_seg[(index_s+2:(n_CP_current+1)), :]
+    β_mean_aux = [β_mean_aux_1; β_mean_aux_2; β_mean_aux_3]
+    β_mean_zeros_aux = zeros((n_CP_max - size(β_mean_aux)[1] + 1), (2*n_freq_max+2))
+    β_mean_proposed = [β_mean_aux; β_mean_zeros_aux]
 
     # ω
     ω_aux_1 = ω_seg[1:(index_s-1), :]
@@ -1630,6 +1636,7 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     n_CP_sample[t] = n_CP_current - 1
     s_sample[1:n_CP_sample[t], t] = s_proposed[2:(end-1)]
     β_sample[:, :, t] = β_proposed
+    β_mean_sample[:, :, t] = β_mean_proposed
     ω_sample[:, :, t] = ω_proposed
     n_freq_sample[:, t] = n_freq_proposed
     σ_sample[:, t] = σ_proposed
@@ -1639,6 +1646,7 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
     n_CP_sample[t] = n_CP_current
     s_sample[1:n_CP_sample[t], t] = s_current[2:(end-1)]
     β_sample[:, :, t] = β_seg
+    β_mean_sample[:, :, t] = β_mean_seg
     ω_sample[:, :, t] = ω_seg
     n_freq_sample[1:(n_CP_sample[t] + 1), t] = n_freq_seg
     σ_sample[1:(n_CP_sample[t] + 1), t] = σ_seg
@@ -1657,13 +1665,12 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       # --- Updating segments not involved in death move (w.r.t t-1)
       for j in index_seg_update
 
-        a = floor(Int64, s_current[j])
+        global a = floor(Int64, s_current[j])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_current[j+1] - 1))
+          global b = floor(Int64, (s_current[j+1] - 1))
         end
-
         global y = data[a:b]
         global n = length(y)
         global σ_RW_ω = (1/(σ_RW_ω_hyper*n))
@@ -1681,11 +1688,17 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         ω_sample[j-1, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
         log_likelik_sample[j-1, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+        global ω = MCMC_S["ω"]
+        global σ = MCMC_S["σ"]
+        global y = data
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j-1, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
       end
 
       # --- Updating segment involved in death move (w.r.t )
-      a = floor(Int64, s_current[index_s])
-      b = floor(Int64, (s_current[index_s+1] - 1))
+      global a = floor(Int64, s_current[index_s])
+      global b = floor(Int64, (s_current[index_s+1] - 1))
       global y = data[a:b]
       global n = length(y)
       global σ_RW_ω = (1/(σ_RW_ω_hyper*n))
@@ -1702,6 +1715,12 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       ω_sample[index_s, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
       log_likelik_sample[index_s, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+      global ω = MCMC_S["ω"]
+      global y = data
+      global σ = MCMC_S["σ"]
+      β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                               zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+      β_mean_sample[index_s, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
     elseif (index_s == n_CP_current)
 
       index_seg_update = collect(1:(n_CP_current-1))
@@ -1709,11 +1728,11 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       # --- Updating segments not involved in death move (w.r.t t-1)
       for j in index_seg_update
 
-        a = floor(Int64, s_current[j])
+        global a = floor(Int64, s_current[j])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_current[j+1] - 1))
+          global b = floor(Int64, (s_current[j+1] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1731,11 +1750,18 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
         ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
         log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+        global ω = MCMC_S["ω"]
+        global σ = MCMC_S["σ"]
+        global y = data
+
+        β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                 zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+        β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
       end
 
       # --- Updating segment involved in death move (w.r.t )
-      a = floor(Int64, s_current[index_s])
-      b = n_obs
+      global a = floor(Int64, s_current[index_s])
+      global b = n_obs
       global y = data[a:b]
       global n = length(y)
       global σ_RW_ω = (1/(σ_RW_ω_hyper*n))
@@ -1752,17 +1778,23 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       ω_sample[index_s, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
       log_likelik_sample[index_s, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+      global ω = MCMC_S["ω"]
+      global σ = MCMC_S["σ"]
+      global y = data
+      β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                               zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+      β_mean_sample[index_s, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
     else
       # --- Updating segments not involved in death move (w.r.t t-1)
       index_seg_update = vcat(collect(1:(index_s-1)), collect((index_s+2):(n_CP_current + 1)))
 
       for j in index_seg_update
 
-        a = floor(Int64, s_current[j])
+        global a = floor(Int64, s_current[j])
         if (j == n_CP_current + 1)
-          b = floor(Int64, n_obs)
+          global b = floor(Int64, n_obs)
         else
-          b = floor(Int64, (s_current[j+1] - 1))
+          global b = floor(Int64, (s_current[j+1] - 1))
         end
         global y = data[a:b]
         global n = length(y)
@@ -1784,6 +1816,12 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
           ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
           log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+          global ω = MCMC_S["ω"]
+          global σ = MCMC_S["σ"]
+          global y = data
+          β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                   zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+          β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
 
         else
 
@@ -1793,13 +1831,20 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
           ω_sample[j-1, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
           log_likelik_sample[j-1, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+          global ω = MCMC_S["ω"]
+          global σ = MCMC_S["σ"]
+          global y = data
+          β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                                   zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+          β_mean_sample[j-1, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
+
         end
 
       end
 
       # --- Updating segment involved in death move (w.r.t  t)
-      a = floor(Int64, s_current[index_s])
-      b = floor(Int64, s_current[index_s+2]) - 1
+      global a = floor(Int64, s_current[index_s])
+      global b = floor(Int64, s_current[index_s+2]) - 1
       global y = data[a:b]
       global n = length(y)
       global σ_RW_ω = (1/(σ_RW_ω_hyper*n))
@@ -1816,15 +1861,21 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       ω_sample[index_s, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
       log_likelik_sample[index_s, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+      global ω = MCMC_S["ω"]
+      global σ = MCMC_S["σ"]
+      global y = data
+      β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                               zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+      β_mean_sample[index_s, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
     end
   else
     s_aux = vcat(1, s_sample[1:n_CP_current, t], n_obs)
     for j in 1:(n_CP_current + 1)
-      a = floor(Int64, s_aux[j])
+      global a = floor(Int64, s_aux[j])
       if (j == n_CP_current + 1)
-        b = floor(Int64, n_obs)
+        global b = floor(Int64, n_obs)
       else
-        b = floor(Int64, (s_aux[j+1] - 1))
+        global b = floor(Int64, (s_aux[j+1] - 1))
       end
       global y = data[a:b]
       global n = length(y)
@@ -1842,12 +1893,18 @@ function death_move_non_stationary(t, n_CP_sample, β_sample, ω_sample,
       ω_sample[j, :, t] = vcat(MCMC_S["ω"], zeros(n_freq_max - length(MCMC_S["ω"])))
       log_likelik_sample[j, t] = log_likelihood_segment_aux(y, MCMC_S["β"], MCMC_S["ω"], a, b, MCMC_S["σ"])
 
+      global ω = MCMC_S["ω"]
+      global σ = MCMC_S["σ"]
+      global y = data
+      β_mean_aux = optimize(neg_f_log_posterior_β, neg_g_log_posterior_β!, neg_h_log_posterior_β!,
+                                                               zeros(2*MCMC_S["m"]+2), BFGS()).minimizer
+      β_mean_sample[j, :, t] = vcat(β_mean_aux, zeros((2*n_freq_max+2)  - length(β_mean_aux)))
+
     end
   end
 
-  output = Dict("n_CP" => n_CP_sample, "β" => β_sample, "σ" => σ_sample,
-              "ω" => ω_sample, "s" => s_sample, "n_freq" => n_freq_sample,
-              "log_likelik" => log_likelik_sample)
+  output = Dict("n_CP" => n_CP_sample, "β" => β_sample, "β_mean" => β_mean_sample, "σ" => σ_sample,
+              "ω" => ω_sample, "s" => s_sample, "n_freq" => n_freq_sample, "log_likelik" => log_likelik_sample)
 
   return output
 end
