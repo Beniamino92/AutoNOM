@@ -1,4 +1,3 @@
-# AutoNOM
 
 # AutoNOM - Auomatic Nonstationary Oscillatory Modelling 
 
