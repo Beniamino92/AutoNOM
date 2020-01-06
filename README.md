@@ -6,7 +6,8 @@ periodic time series. The methods implement reversible-jump MCMC based
 algorithms as described in the paper of Hadj-Amar et al. (2019), 
 "Bayesian Model Search for Nonstationary Periodic Time Series". Note that
 this version does not use the optimization routine used to
-sample the linear basis function coefficients \beta's (i.e. Laplace approximation).
+sample the linear basis function coefficients \beta's (i.e. non approximation
+to their posterior conditional distributions).
 We now draw the \beta's directly from their Gaussian posterior conditional 
 distribution. For more details, see PhD Thesis of B.Hadj-Amar. 
 
