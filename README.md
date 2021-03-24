@@ -9,7 +9,9 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 Note that this version does not use the optimization routine used to
 sample the linear basis function coefficients \beta's (normal approximation).
 which are now sampled from their Gaussian posterior conditional 
-distribution. For more details, see Ph.D. Thesis of B.Hadj-Amar. 
+distribution. For more details, see Ph.D. Thesis of B.Hadj-Amar 
+which can be found at: 
+https://www.researchgate.net/publication/346491839_Bayesian_Analysis_of_Nonstationary_Periodic_Time_Series
 
 
 * Main Inference Script:
