@@ -7,7 +7,7 @@ algorithms as described in the paper of Hadj-Amar et al. (2019),
 "Bayesian Model Search for Nonstationary Periodic Time Series".
 
 Note that this version does not use the optimization routine used to
-sample the linear basis function coefficients \beta's (normal approximation).
+sample the linear basis function coefficients \beta's (normal approximation),
 which are now sampled from their Gaussian posterior conditional 
 distribution. 
 For more details, see Ph.D. Thesis of B.Hadj-Amar which can be found at: 
