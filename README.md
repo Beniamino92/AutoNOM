@@ -10,7 +10,7 @@ algorithms as detailed in Hadj-Amar et al. (2020) ["_Bayesian Model Search for N
 
 ## Example 
 
-We provide a snapshot of `illustrative_example.jl` for using our software in Julia
+We provide a snapshot of `illustrative_example.jl`, which contains a tutorial for using our software in Julia
 
 * Run MCMC sampler
   ```Julia
