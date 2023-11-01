@@ -12,7 +12,7 @@ algorithms as detailed in Hadj-Amar et al. (2020) ["_Bayesian Model Search for N
 
 We provide a snapshot of `illustrative_example.jl`, which contains a tutorial for using our software in Julia
 
-* Run MCMC sampler
+* Run RJMCMC sampler
   ```Julia
   MCMC_simul = AutoNOM(data, hyperparms; s_start = [40])
   ```
