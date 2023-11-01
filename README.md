@@ -20,6 +20,7 @@ We provide a snapshot of `illustrative_example.jl` for using our software in Jul
 <p align="center">
 <img src="https://github.com/Beniamino92/AutoNOM/blob/master/figures/posterior_data.png" width="400" heigth="140"/> 
 </p>
+
 * Trace plot frequencies 
 <p align="center">
 <img src="https://github.com/Beniamino92/AutoNOM/blob/master/figures/posterior_freq.png" width="400" heigth="170"/> 
