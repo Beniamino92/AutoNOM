@@ -16,6 +16,13 @@ We provide a snapshot of `illustrative_example.jl` for using our software in Jul
   ```Julia
   MCMC_simul = AutoNOM(data, hyperparms; s_start = [40])
   ```
+<p align="center">
+<img src="https://github.com/Beniamino92/AutoNOM/blob/master/figures/posterior_data.png" width="400" heigth="170"/> 
+</p>
+
+<p align="center">
+<img src="https://github.com/Beniamino92/AutoNOM/blob/master/figures/posterior_freq.png" width="400" heigth="170"/> 
+</p>
 
 
  
