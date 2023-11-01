@@ -10,6 +10,9 @@ algorithms as detailed in Hadj-Amar et al. (2020) ["_Bayesian Model Search for N
 
 We provide a snapshot of `illustrative_example.jl` for using our software in Julia
 
-* Simulate and plot a non-stationary oscillatory time series 
+* Run MCMC sampler
+  ```Julia
+  MCMC_simul = AutoNOM(data, hyperparms; s_start = [40])
+  ```
  
 
